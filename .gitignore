@@ -1,0 +1,7 @@
+.DS_Store
+.env
+.idea/
+artifacts/
+cache/
+node_modules/
+package-lock.json
