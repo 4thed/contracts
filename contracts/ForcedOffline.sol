@@ -1,210 +1,174 @@
-// SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.9;
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.17;
 
-import "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
-import "@openzeppelin/contracts-upgradeable/token/ERC721/IERC721Upgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/utils/CountersUpgradeable.sol";
-import { StringsUpgradeable } from '@openzeppelin/contracts-upgradeable/utils/StringsUpgradeable.sol';
+/*
+███████╗ ██████╗ ██████╗  ██████╗███████╗██████╗      ██████╗ ███████╗███████╗██╗     ██╗███╗   ██╗███████╗
+██╔════╝██╔═══██╗██╔══██╗██╔════╝██╔════╝██╔══██╗    ██╔═══██╗██╔════╝██╔════╝██║     ██║████╗  ██║██╔════╝
+█████╗  ██║   ██║██████╔╝██║     █████╗  ██║  ██║    ██║   ██║█████╗  █████╗  ██║     ██║██╔██╗ ██║█████╗
+██╔══╝  ██║   ██║██╔══██╗██║     ██╔══╝  ██║  ██║    ██║   ██║██╔══╝  ██╔══╝  ██║     ██║██║╚██╗██║██╔══╝
+██║     ╚██████╔╝██║  ██║╚██████╗███████╗██████╔╝    ╚██████╔╝██║     ██║     ███████╗██║██║ ╚████║███████╗
+╚═╝      ╚═════╝ ╚═╝  ╚═╝ ╚═════╝╚══════╝╚═════╝      ╚═════╝ ╚═╝     ╚═╝     ╚══════╝╚═╝╚═╝  ╚═══╝╚══════╝
+*/
+
+import "@openzeppelin/contracts/token/ERC721/extensions/ERC721Enumerable.sol";
+import "@openzeppelin/contracts/proxy/utils/Initializable.sol";
+import "@openzeppelin/contracts/token/ERC721/IERC721.sol";
+import "@openzeppelin/contracts/utils/Counters.sol";
+import { Strings } from '@openzeppelin/contracts/utils/Strings.sol';
 import { Base64 } from 'base64-sol/base64.sol';
 import "hardhat/console.sol";
-import "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import "@openzeppelin/contracts/access/AccessControlEnumerable.sol";
+import "./interfaces/IForcedOfflineMetadata.sol";
+import "./interfaces/IForcedOffline.sol";
 
+contract ForcedOffline is
+Initializable,
+AccessControlEnumerable,
+ERC721Enumerable,
+IForcedOffline
+{
+    using Counters for Counters.Counter;
+    using Strings for uint256;
 
-contract ForcedOffline is Initializable, UUPSUpgradeable, ERC721EnumerableUpgradeable, OwnableUpgradeable {
-    using CountersUpgradeable for CountersUpgradeable.Counter;
-    using StringsUpgradeable for uint256;
+    /*//////////////////////////////////////////////////////////////
+                               CONSTANTS
+    //////////////////////////////////////////////////////////////*/
+    bytes32 public constant REVEALER_ROLE = keccak256("REVEALER_ROLE");
+    bytes32 public constant ADMIN_ROLE = keccak256("ADMIN_ROLE");
 
-    string private constant _SVG_START_TAG = '<svg width="320" height="320" viewBox="0 0 320 320" xmlns="http://www.w3.org/2000/svg" shape-rendering="crispEdges">';
-    string private constant _SVG_END_TAG = '</svg>';
+    Counters.Counter private _tokenIds;
 
-    CountersUpgradeable.Counter private _tokenIds;
-    string[] public talents;
-    string[] private backgrounds;
-    string[] private weapons;
-    string[] private hairs;
-    string[] private eyes;
+    mapping (uint => bool) public revealed;
 
-    mapping (uint => uint) public tokenBackground;
-    mapping (uint => uint) public tokenTalent;
-    mapping (uint => uint) public tokenWeapon;
-    mapping (uint => uint) public tokenHair;
-    mapping (uint => uint) public tokenEye;
-    mapping (uint => string) public tokenName;
-    mapping (uint => string) public tokenDescription;
+    string public defaultBaseURI;
 
-    struct TokenURIParams {
-        string name;
-        string description;
-        string weapon;
-        string hair;
-        string eye;
-        string talent;
-        string background;
+    uint public totalQuota;
+    uint public totalSold;
+
+    address public metadataAddress;
+
+    /// @dev This event emits when the metadata of a token is changed.
+    /// So that the third-party platforms such as NFT market could
+    /// timely update the images and related attributes of the NFT.
+    event MetadataUpdate(uint256 _tokenId);
+
+    /// @dev This event emits when the metadata of a range of tokens is changed.
+    /// So that the third-party platforms such as NFT market could
+    /// timely update the images and related attributes of the NFTs.
+    event BatchMetadataUpdate(uint256 _fromTokenId, uint256 _toTokenId);
+
+    /*//////////////////////////////////////////////////////////////
+                           CONSTRUCTOR
+    //////////////////////////////////////////////////////////////*/
+    constructor() ERC721("ForceOffline", "FOL") {
+        _setupRole(DEFAULT_ADMIN_ROLE, _msgSender());
+        _setupRole(REVEALER_ROLE, _msgSender());
+        _setupRole(ADMIN_ROLE, _msgSender());
+
+        defaultBaseURI = "";
+        totalQuota = 500;
     }
 
-    struct SVGParams {
-        string name;
-        string weapon;
-        string hair;
-        string eye;
-        string talent;
-        string background;
-    }
 
-    function initialize() initializer public {
-        __Ownable_init_unchained();
-        __ERC721_init_unchained("ForceOffline", "FOL");
-        __ERC721Enumerable_init_unchained();
-        talents = ["Sniper", "Aviator", "Ninja", "Hacker", "Looter", "Smuggler"];
-        backgrounds = ["chartreuse", "darkturquoise", "lightskyblue", "lightsalmon", "lavender"];
-        weapons = ["Shield", "Dagger", "Bow", "Revolver", "Rifle" ];
-        hairs = ["Fishtail", "Drape", "Stringy", "Slick Shaved", "Short"];
-        eyes = ["Statistics Pink", "Statistics Yellow", "Cyber Eyes", "Patch", "Statistics Green"];
-    }
-
-    function setName(uint tokenId_, string calldata name_) public {
-        require(_exists(tokenId_), "Name set of nonexistent token");
-        tokenDescription[tokenId_] = name_;
-    }
-
-    function setDescription(uint tokenId_, string calldata description_) public {
-        require(_exists(tokenId_), "Description set of nonexistent token");
-        tokenDescription[tokenId_] = description_;
-    }
-
-    function setBackground(uint tokenId_, uint background_) public {
-        require(_exists(tokenId_), "background set of nonexistent token");
-        require(background_ < backgrounds.length, "invalid background");
-        tokenBackground[tokenId_] = background_;
-    }
-
-    function setTalent(uint tokenId_, uint talent_) public {
-        require(_exists(tokenId_), "talent set of nonexistent token");
-        require(talent_ < talents.length, "invalid talent");
-        tokenTalent[tokenId_] = talent_;
-    }
-
-    function setWeapon(uint tokenId_, uint weapon_) public {
-        require(_exists(tokenId_), "Weapon set of nonexistent token");
-        require(weapon_ < weapons.length, "invalid talent");
-        tokenWeapon[tokenId_] = weapon_;
-    }
-
-    function setHair(uint tokenId_, uint hair_) public {
-        require(_exists(tokenId_), "Hair set of nonexistent token");
-        require(hair_ < hairs.length, "invalid talent");
-        tokenHair[tokenId_] = hair_;
-    }
-
-    function setEye(uint tokenId_, uint eye_) public {
-        require(_exists(tokenId_), "Eye set of nonexistent token");
-        require(eye_ < eyes.length, "invalid talent");
-        tokenEye[tokenId_] = eye_;
-    }
-
-    function mint(address to, string memory name_, string memory description_,
-        uint background_, uint talent_, uint weapon_, uint hair_, uint eye_) public {
-
+    /*//////////////////////////////////////////////////////////////
+                               MINTING LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function mint(address to) onlyRole(ADMIN_ROLE) public {
         uint256 newItemId = _tokenIds.current();
+        require(newItemId < totalQuota, "exceeding quota");
+        totalSold += 1;
         _safeMint(to, newItemId);
-        tokenName[newItemId] = name_;
-        tokenDescription[newItemId] = description_;
-        setBackground(newItemId, background_);
-        setTalent(newItemId, talent_);
-        setWeapon(newItemId, weapon_);
-        setHair(newItemId, hair_);
-        setEye(newItemId, eye_);
-
         _tokenIds.increment();
+    }
+
+    function mintMulti(address to, uint amount) onlyRole(ADMIN_ROLE) external {
+        require(amount > 0, "ForcedOffline: missing amount");
+        require(totalSold + amount <= totalQuota, "exceeding quota");
+        for (uint i = 0; i < amount; i++) {
+            mint(to);
+        }
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                           REVEALING LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function reveal(uint tokenId_) onlyRole(REVEALER_ROLE) public {
+        require(_exists(tokenId_), 'ForcedOffline: nonexistent token');
+        revealed[tokenId_] = true;
+    }
+
+    function hasRevealed(uint tokenId_) public view returns (bool){
+        return revealed[tokenId_];
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                             URI LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function _baseURI() internal view virtual override returns (string memory) {
+        return defaultBaseURI;
     }
 
     function tokenURI(uint256 tokenId_) public view override returns (string memory) {
         require(_exists(tokenId_), 'URI query for nonexistent token');
-        string memory name = tokenName[tokenId_];
-        string memory description = tokenDescription[tokenId_];
-        string memory weapon = weapons[tokenWeapon[tokenId_]];
-        string memory hair = hairs[tokenHair[tokenId_]];
-        string memory eye = eyes[tokenEye[tokenId_]];
-        string memory talent = talents[tokenTalent[tokenId_]];
-        string memory background = backgrounds[tokenBackground[tokenId_]];
-
-        TokenURIParams memory params = TokenURIParams({
-            name: name,
-            description: description,
-            weapon: weapon,
-            hair: hair,
-            eye: eye,
-            talent: talent,
-            background: background
-        });
-        return constructTokenURI(params);
+        if (! hasRevealed(tokenId_)) {
+            return "";
+        }
+        return IForcedOfflineMetadata(metadataAddress).tokenURI(tokenId_);
     }
 
-    function constructTokenURI(TokenURIParams memory params)
-        public
-        pure
-        returns (string memory)
+    function setDefaultBaseURI(string memory defaultBaseURI_) onlyRole(ADMIN_ROLE) external {
+        defaultBaseURI = defaultBaseURI_;
+        IForcedOfflineMetadata(metadataAddress).setBaseURI(defaultBaseURI_);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                              METADATA LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function setDescription(uint tokenId_, string calldata description_) onlyRole(ADMIN_ROLE) external {
+        require(_exists(tokenId_), "Description set of nonexistent token");
+        IForcedOfflineMetadata(metadataAddress).setDescription(tokenId_, description_);
+    }
+
+    function notifyBatchMetadataUpdated(uint256 fromTokenId_, uint256 toTokenId_) onlyRole(ADMIN_ROLE) external {
+        emit BatchMetadataUpdate(fromTokenId_, toTokenId_);
+    }
+
+    function notifyMetadataUpdated(uint256 tokenId_) onlyRole(ADMIN_ROLE) external {
+        emit MetadataUpdate(tokenId_);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                         CONFIGURE LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function setMetadataConfig(address metadataAddress_) onlyRole(ADMIN_ROLE) external {
+        require(metadataAddress_ != address(0), "The address of metadata config is null");
+        metadataAddress = metadataAddress_;
+    }
+
+    function setTotalQuota(uint totalQuota_) onlyRole(ADMIN_ROLE) external {
+        totalQuota = totalQuota_;
+    }
+
+    function setTotalSold(uint totalSold_) onlyRole(ADMIN_ROLE) external {
+        totalSold = totalSold_;
+    }
+
+    function supportsInterface(bytes4 interfaceId)
+    public
+    view
+    virtual
+    override(AccessControlEnumerable, ERC721Enumerable)
+    returns (bool)
     {
-        string memory image = generateSVGImage(
-            SVGParams({
-            name: params.name,
-            talent: params.talent,
-            background: params.background,
-            weapon: params.weapon,
-            hair: params.hair,
-            eye: params.eye
-        }));
-
-        return string(
-            abi.encodePacked(
-                'data:application/json;base64,',
-                Base64.encode(
-                    bytes(
-                        abi.encodePacked('{"name":"',
-                            params.name,
-                            '","description":"',
-                            params.description,
-                            '","image": "', 'data:image/svg+xml;base64,',
-                            image,
-                        abi.encodePacked(
-                            '","attributes":[',
-                                '{"trait_type": "talent", "value": "', params.talent, '"},',
-                                '{"trait_type": "weapon", "value": "', params.weapon, '"},',
-                                '{"trait_type": "hair", "value": "', params.hair, '"},',
-                                '{"trait_type": "eye", "value": "', params.eye, '"},',
-                                '{"trait_type": "background", "value": "', params.background, '"}',
-                            ']}'))
-                    )
-                )
-            )
-        );
+        return super.supportsInterface(interfaceId);
     }
 
-    function generateSVGImage(SVGParams memory params)
-        internal
-        pure
-        returns (string memory svg)
-    {
-        return Base64.encode(bytes(generateSVG(params)));
+    /*//////////////////////////////////////////////////////////////
+                            ADMIN LOGIC
+    //////////////////////////////////////////////////////////////*/
+    function transferAdmin(address account) external onlyRole(DEFAULT_ADMIN_ROLE) {
+        grantRole(DEFAULT_ADMIN_ROLE, account);
+        revokeRole(DEFAULT_ADMIN_ROLE, _msgSender());
     }
-
-    function generateSVG(SVGParams memory params) internal pure returns (string memory svg) {
-
-        string memory svg_start = string(
-            abi.encodePacked(
-                _SVG_START_TAG,
-                '<style>.base { fill: white; font-family: serif; font-size: 14px; }</style>'));
-        return string(
-            abi.encodePacked(
-                svg_start,
-                '<rect width="100%" height="100%" fill="', params.background, '" />',
-                '<text x="50%" y="50%" class="base" dominant-baseline="middle" text-anchor="middle"> ', params.name, ' </text>',
-                _SVG_END_TAG
-            )
-        );
-    }
-    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
 }
